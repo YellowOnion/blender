@@ -242,6 +242,8 @@ class GHOST_ContextVK : public GHOST_Context {
   uint64_t m_render_frame;
   uint64_t m_image_count;
 
+  timespec swap_time;
+
   VkExtent2D m_render_extent;
   VkExtent2D m_render_extent_min;
   VkSurfaceFormatKHR m_surface_format;

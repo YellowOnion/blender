@@ -604,6 +604,9 @@ GHOST_ContextVK::~GHOST_ContextVK()
 
 GHOST_TSuccess GHOST_ContextVK::swapBuffers()
 {
+  timespec ts = {0, 0};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+
   if (m_swapchain == VK_NULL_HANDLE) {
     return GHOST_kFailure;
   }
@@ -625,14 +628,10 @@ GHOST_TSuccess GHOST_ContextVK::swapBuffers()
    * frame.
    */
   GHOST_Frame &submission_frame_data = m_frame_data[m_render_frame];
-  uint64_t next_render_frame = (m_render_frame + 1) % m_frame_data.size();
-
-  /* Wait for next frame to finish rendering. Presenting can still
-   * happen in parallel, but acquiring needs can only happen when the frame acquire semaphore has
-   * been signaled and waited for. */
-  VkFence *next_frame_fence = &m_frame_data[next_render_frame].submission_fence;
-  vkWaitForFences(device, 1, next_frame_fence, true, UINT64_MAX);
+  vkWaitForFences(device, 1, &m_frame_data[(m_render_frame) % m_frame_data.size()].submission_fence, true, UINT64_MAX);
   submission_frame_data.discard_pile.destroy(device);
+  timespec tfence = {0, 0};
+  clock_gettime(CLOCK_MONOTONIC, &tfence);
 
 #ifdef WITH_GHOST_WAYLAND
   /* Wayland doesn't provide a WSI with windowing capabilities, therefore cannot detect whether the
@@ -667,6 +666,8 @@ GHOST_TSuccess GHOST_ContextVK::swapBuffers()
       recreateSwapchain();
     }
   }
+  timespec taquire = {0, 0};
+  clock_gettime(CLOCK_MONOTONIC, &taquire);
   CLOG_INFO(&LOG, 3, "render_frame=%lu, image_index=%u", m_render_frame, image_index);
   GHOST_SwapchainImage &swapchain_image = m_swapchain_images[image_index];
 
@@ -679,6 +680,10 @@ GHOST_TSuccess GHOST_ContextVK::swapBuffers()
   swap_chain_data.present_semaphore = swapchain_image.present_semaphore;
 
   vkResetFences(device, 1, &submission_frame_data.submission_fence);
+
+  timespec tprecb = {0, 0};
+  clock_gettime(CLOCK_MONOTONIC, &tprecb);
+
   if (swap_buffers_pre_callback_) {
     swap_buffers_pre_callback_(&swap_chain_data);
   }
@@ -697,15 +702,18 @@ GHOST_TSuccess GHOST_ContextVK::swapBuffers()
     std::scoped_lock lock(vulkan_device->queue_mutex);
     present_result = vkQueuePresentKHR(m_present_queue, &present_info);
   }
-  m_render_frame = next_render_frame;
+
+  timespec tpresent = {0, 0};
+  clock_gettime(CLOCK_MONOTONIC, &tpresent);
+
   if (present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR) {
     recreateSwapchain();
     if (swap_buffers_post_callback_) {
       swap_buffers_post_callback_();
     }
-    return GHOST_kSuccess;
   }
-  if (present_result != VK_SUCCESS) {
+
+  if (present_result != VK_SUCCESS && !(present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR)) {
     CLOG_ERROR(
         &LOG, "failed to present swap chain image : %s", vulkan_error_as_string(acquire_result));
   }
@@ -714,6 +722,21 @@ GHOST_TSuccess GHOST_ContextVK::swapBuffers()
     swap_buffers_post_callback_();
   }
 
+  m_render_frame = (m_render_frame + 1) % m_frame_data.size();
+
+  timespec tpostcb = {0, 0};
+  clock_gettime(CLOCK_MONOTONIC, &tpostcb);
+
+  printf("swap: start: %ld.%06ld, prev: %ld, fence: %ld, acquire %ld, precb: %ld, present: %ld, postcb %ld\n",
+         (ts.tv_sec), (ts.tv_nsec / 1000),
+         (ts.tv_nsec - swap_time.tv_nsec) / 1000,
+         (tfence.tv_nsec   - ts.tv_nsec) / 1000,
+         (taquire.tv_nsec - tfence.tv_nsec) / 1000,
+         (tprecb.tv_nsec   - taquire.tv_nsec) / 1000,
+         (tpresent.tv_nsec - tprecb.tv_nsec) / 1000,
+         (tpostcb.tv_nsec  - tpresent.tv_nsec) / 1000
+  );
+  clock_gettime(CLOCK_MONOTONIC, &swap_time);
   return GHOST_kSuccess;
 }
 
